@@ -1,46 +1,72 @@
 import sqlite3
 import pandas as pd
 from celery import Celery
-import logging
 import os
+from datetime import timedelta
 
-# Definindo caminho absoluto do banco
+# Caminho absoluto do banco e CSV
 base_dir = os.path.dirname(os.path.abspath(__file__))
-db_path = os.path.join(base_dir, "gasolinaPrecos.db")
+db_caminho = os.path.join(base_dir, "gasolinaPrecos.db")
+csv_files = ['CSV_gasolina_2000+.csv']
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+app = Celery("sql_celery", broker="redis://localhost:6379/0", backend="redis://localhost:6379/0")
 
-app = Celery("tasks", broker="redis://localhost:6379/0", backend="redis://localhost:6379")
+# Task a cada minuto
+app.conf.beat_schedule = {'carregar-csv-10-por-vez': {'task': 'sql_celery.carregar_csv_10_por_vez','schedule': timedelta(minutes=1)}}
 
-#definindo função para o celery poder executar
-@app.task
-def carregar_csv():
-    logging.info("Iniciando tarefa carregar_csv")
+def renomeia_colunas(c):
+    #Renomeia coluna para ser compatível com SQLite
+    c = str(c) 
+    c = c.replace(" ", "_").replace("-", "_")
+    if c and c[0].isdigit():
+        c = f"col_{c}"
+    return c
+
+@app.task(name="sql_celery.carregar_csv_10_por_vez")
+def carregar_csv_10_por_vez():
+
+    #import pdb; pdb.set_trace() # --> debug breakpoint
+    conn = None
     try:
-        logging.info(f"Salvando dados no SQLite em: {db_path}")
-        conn = sqlite3.connect(db_path)
-        logging.info("Conexão com SQLite aberta")
+        conn = sqlite3.connect(db_caminho)
+        tamanho_bloco = 10
 
-        # Carregar CSVs
-        df_2000 = pd.read_csv(os.path.join(base_dir, 'CSV_gasolina_2000+.csv'), sep=',', decimal='.', index_col=0)
-        df_2010 = pd.read_csv(os.path.join(base_dir, 'CSV_gasolina_2010+.csv'), sep=',', decimal='.', index_col=0)
-        logging.info(f"CSV 2000: {df_2000.shape}, CSV 2010: {df_2010.shape}")
+        for arquivo in csv_files:
+            arquivo_caminho = os.path.join(base_dir, arquivo)
 
-        # Concatenar
-        df_gasolina = pd.concat([df_2000, df_2010])
-        logging.info(f"DataFrames concatenados: {df_gasolina.shape}")
+            # Verifica se a tabela existe
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='data'")
+            tabela_existe = cursor.fetchone() is not None 
 
-        # Salvar o SQL e fechar conexão
-        df_gasolina.index.name = 'index_name'
-        df_gasolina.to_sql('data', conn, index_label='index_name', if_exists='replace')
-        conn.commit()
-        logging.info("Dados salvos no SQLite com sucesso")
+            #import pdb; pdb.set_trace() # --> segundo debug breakpoint
+            if tabela_existe:
+                cursor.execute("SELECT COUNT(*) FROM data")
+                linhas_existentes = cursor.fetchone()[0]
+            else:
+                linhas_existentes = 0
 
-        conn.close()
-        logging.info("Conexão com SQLite encerrada")
-        return f"{df_gasolina.shape[0]} linhas inseridas no banco"
-    
-    #Definindo mensagem de erro
+            # Lê o próximo bloco do CSV
+            df = pd.read_csv(arquivo_caminho,sep=',',decimal='.',index_col=0,
+                skiprows=lambda x: x != 0 and x <= linhas_existentes,  # pula linhas já lidas, mas não o cabeçalho
+                nrows=tamanho_bloco
+            )
+
+            if df.empty:
+                continue
+
+            df.index.name = 'index_name'
+
+            #import pdb; pdb.set_trace() # --> terceiro debug breakpoint
+            if not tabela_existe:
+                df.to_sql('data', conn, if_exists='replace', index_label='index_name')
+            else:
+                # Pega colunas existentes no banco
+                cursor.execute("PRAGMA table_info(data)")
+                colunas_existentes = [col[1] for col in cursor.fetchall()]
+
+                # Insere os dados
+                df.to_sql('data', conn, if_exists='append', index_label='index_name')
+
     except Exception as e:
-        logging.error(f"Erro durante a execução da tarefa: {e}")
         raise e
