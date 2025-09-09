@@ -8,14 +8,13 @@ Os dados são integrados a partir de múltiplos arquivos CSV, processados com **
 ## 📂 Estrutura do Projeto
 
 - **Dataset**: [Gas Prices in Brazil (Kaggle)](https://www.kaggle.com/datasets/matheusfreitag/gas-prices-in-brazil)  
-- **CSV_gasolina_2000+.csv** → Preços da gasolina desde 2000.  
-- **CSV_gasolina_2010+.csv** → Preços da gasolina desde 2010.  
+- **CSV_gasolina_2000+.csv** → Preços da gasolina desde 2000.    
 - **gasolinaPrecos.db** → Banco de dados **SQLite** que armazena os dados integrados (gerado automaticamente pela task Celery).  
 - **sql_celery.py** → Script com a task **Celery** que:
   - Lê os arquivos CSV.  
-  - Concatena os datasets.  
-  - Salva no banco SQLite (`gasolinaPrecos.db`) em uma tabela chamada `data`.  
-  - Faz logging de cada etapa.  
+  - Salva no banco SQLite (`gasolinaPrecos.db`) em uma tabela chamada `data`.
+  - Executa essa tarefa em blocos de 10 linhas, a cada minuto. 
+  - Faz o debug de cada etapa. " #import pdb; pdb.set_trace() # --> debug breakpoint "  
 - **FiltrandoDados.py** → Script de análise que:
   - Carrega os CSVs e concatena em um único DataFrame.  
   - Ajusta e converte as colunas de datas.  
@@ -33,7 +32,7 @@ Os dados são integrados a partir de múltiplos arquivos CSV, processados com **
 - Persistência em **SQLite** para consultas futuras.  
 - Filtros e cálculos estatísticos (preço médio, valores acima de R$5, variações por estado).  
 - Automação do pipeline (CSV → SQLite → análise).  
-- Logging detalhado para auditoria do processo.  
+- Breakpoints detalhados para auditoria do processo.  
 
 ---
 
@@ -47,11 +46,10 @@ docker-compose up -d
 pip install pandas celery redis
 
 3. Iniciar o worker Celery na raiz do projeto:
-celery -A sql_celery worker -l info
+celery -A sql_celery worker --loglevel=info --pool=solo
 
-4. Executar a task de carga dos CSVs no Python shell:
-from sql_celery import carregar_csv
-resultado = carregar_csv.delay()
+4. Executar a task de carga agendadada dos CSVs na shell:
+celery -A sql_celery beat --loglevel=info
 
 5. Rodar as análises python em FiltrandoDados.py
 
@@ -59,7 +57,7 @@ resultado = carregar_csv.delay()
 
 ## 📈 Exemplos de análises implementadas
 
--Preço médio da gasolina comum em Agosto/2008:
+- Preço médio da gasolina comum em Agosto/2008:
 
 2.736
 
